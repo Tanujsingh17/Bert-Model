@@ -1,0 +1,128 @@
+import tensorflow as tf
+import tensorflow_hub as hub
+import tensorflow_text as text
+import pandas as pd
+
+
+df = pd.read_csv("spam.csv", encoding = "ISO-8859-1")
+df.head()
+
+
+df = df.drop(["Unnamed: 2", "Unnamed: 3", "Unnamed: 4"], axis=1)
+df.head()
+
+
+## describe helps in printing the below code
+df.groupby("Category").describe()
+
+
+## creating a column from existing column using apply and applying lambda function so that
+## when category column has spam as text then in our spam column put value as 1 or else put 0
+df["spam"] = df["Category"].apply(lambda x:1 if x=='spam' else 0)
+df.head()
+
+
+## model and data splitting
+from sklearn.model_selection import train_test_split
+x_train, x_test, y_train, y_test = train_test_split(df['Message'], df['spam'], test_size=0.2, stratify=df['spam'])
+## x_train and x_test will take the message values
+## y_train and y_test will take the spam values
+## stratify is used to provide balance between train and test values
+
+
+y_train.value_counts()
+
+y_test.value_counts()
+
+
+## using our pre-trained model(bert) to create embeddings
+## downloading bert model(it is pre-trained model, trained on wikipedia and book corpus)
+## can be used as a pointer function and we supply our sentences as argument,
+## and it returns preprocessed text(bert_preprocessing_url)
+bert_preprocessing_url = hub.KerasLayer("https://tfhub.dev/tensorflow/bert_en_uncased_preprocess/3")
+bert_mainencoder_url = hub.KerasLayer("https://tfhub.dev/tensorflow/bert_en_uncased_L-12_H-768_A-12/4")
+
+
+## this function takes couple of sentences(array) as input and returns an embedding vector for each sentence
+def get_sentence_embedding(sentences):
+    preprocessed_text = bert_preprocessing_url(sentences)
+    ## returns a dictionary from which we need to use the pooled output
+    return bert_mainencoder_url(preprocessed_text)['pooled_output']
+    ## pooled output is the encoding for the entire sentence(each)
+
+
+## generated embedding vector of size 768 for each sentence
+get_sentence_embedding(["500$ discount! Hurry up.", "Bhavin, are you up for a volleyball game tomorrow?"])
+
+
+others = get_sentence_embedding(["Banana", "Mango", "Grapes", "Jeff Bezos", "Bill Gates", "Elon Musk"])
+others
+## its embedding vectors
+
+
+## using cosine similarity(arguments placed inside a 2-d array ie [others[0]]) to compare two vectors
+from sklearn.metrics.pairwise import cosine_similarity
+## comparing Banana and Jeff Bezos
+cosine_similarity([others[0]], [others[3]])
+## as output is 0.847 so not that much similar
+
+
+## comparing Mango and Grapes
+cosine_similarity([others[1]], [others[2]])
+## as output 0.985 is so highly similar
+
+
+## comparing Bill Gates and Elon Musk
+cosine_similarity([others[4]], [others[5]])
+## cosine similarity is not an exact vector similarity so we might get some unexpected result
+
+
+## Building our model now
+## So far in our deep learning series we have built tensor flow models using sequential model
+## Now we are going to use functional model to build our models
+## In the sequential model we add layers one by one as a sequence but
+## in the functional model first we create a input layer, then we create a hidden layer and then supply input as a
+## function argument and then we create another hidden(layer) one and supply that into hidden two layer argument and
+## then finally we create a model using multiple input and output layers
+## using functional model(using shape=() like this as sentence length is varying)
+
+text_input_layer = tf.keras.layers.Input(shape=(), dtype=tf.string, name='input')  ## input layer
+preprocessed_text = bert_preprocessing_url(text_input_layer)
+output = bert_mainencoder_url(preprocessed_text)
+output['pooled_output']  ## sentence encoding vector
+
+## creating a dropout(tackles the overfitting) layer and then
+## feeding the pooled output into a dropout layer
+## and finally the last layer would be a one neuron dense layer
+## dropping 10% of neuron
+
+dropout_layer = tf.keras.layers.Dropout(0.1, name="dropout")(output['pooled_output'])
+## binary(0,1) classification hence sigmoid and we are using functional api hence treat it like a
+## function and pass in the previous layer here (one neuron dense layer)
+
+dense_layer = tf.keras.layers.Dense(1, activation="sigmoid", name="output")(dropout_layer)
+model = tf.keras.Model(inputs=[text_input_layer], outputs=[dense_layer])
+model.summary()
+## trainable parameters is 769 ie 768neurons+1(1-output neuron), similarly for the non trainable parameters and the total parameters for our already trained bert model
+
+
+## compiling our builded model(as binary classification so using binary cross entropy)
+model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+
+
+## training the model (take epochs = 10)
+model.fit(x_train, y_train, epochs=10)
+
+
+## the mean accuracy is 0.95
+model.evaluate(x_test, y_test)
+
+
+## Inference(first 3 are spams and rest two are not spams)
+emails = ["XXXMobileMovieClub: To use your credit, click the WAP link in the next txt message orclick here>> http://wap. xxxmobilemovieclub.com?n=QJKGIGHJJGCBL",
+           "Had your mobile 11 months or more? U R entitled to Update to the latest colour mobiles with camera for Free! Call The Mobile Update Co FREE on 08002986030",
+           "WINNER!! As a valued network customer you have been selected to receivea å£900 prize reward! To claim call 09061701461. Claim code KL341. Valid 12 hours only.",
+           "Ffffffffff. Alright no way I can meet up with you sooner?",
+           "I HAVE A DATE ON SUNDAY WITH WILL!!"]
+model.predict(emails)
+## in sigmoid if value is greater than 0.5 then the email is spam
